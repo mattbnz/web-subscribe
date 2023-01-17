@@ -1,3 +1,6 @@
+// Provides a basic proxy over the MailerLite subscription API
+//
+// Copyright © 2023 Matt Brown. MIT Licensed.
 package main
 
 import (
