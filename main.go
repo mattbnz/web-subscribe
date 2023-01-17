@@ -12,10 +12,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 const ML_URL = "https://connect.mailerlite.com/api/subscribers"
-const ML_GROUP_ALL = 77434585283036318
+
+var ml_group = -1
+var ml_apikey = ""
+var healthy = false
 
 type SubRequest struct {
 	Email      string `json:"email"`
@@ -47,6 +51,11 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusFound)
 		return
 	}
+	if !healthy {
+		RenderJSONError(errors.New("service unavailable"), http.StatusServiceUnavailable, w)
+		return
+	}
+
 	/*
 		TODO: Work out why this isn't working on fly.io
 		host, _, _ := net.SplitHostPort(r.Host)
@@ -74,7 +83,7 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		RenderJSONError(errors.New("email is required"), http.StatusBadRequest, w)
 		return
 	}
-	sr.Groups = []int{ML_GROUP_ALL}
+	sr.Groups = []int{ml_group}
 	sr.Status = "unconfirmed"
 	sr.IP_address = r.Header.Get("Fly-Client-IP")
 
@@ -89,7 +98,7 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("ML_APIKEY")))
+	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", ml_apikey))
 
 	client := &http.Client{}
 	response, error := client.Do(request)
@@ -114,10 +123,32 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	ml_apikey = os.Getenv("ML_APIKEY")
+	v, err := strconv.Atoi(os.Getenv("ML_GROUP"))
+	if err != nil {
+		fmt.Printf("ML_GROUP is invalid: %v\n", err)
+	} else {
+		ml_group = v
+	}
+	if ml_apikey != "" && ml_group != -1 {
+		healthy = true
+	} else {
+		fmt.Println("WARNING: server is unhealthy due to missing config - see /healthz for details!")
+	}
 	http.HandleFunc("/", HandleSubscribe)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("all good"))
+		if healthy {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("all good"))
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			if ml_apikey == "" {
+				w.Write([]byte("missing apikey\n"))
+			}
+			if ml_group == -1 {
+				w.Write([]byte("missing group\n"))
+			}
+		}
 	})
 	log.Println("listening on", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
