@@ -12,6 +12,8 @@ processes = []
 [env]
   PORT = "8080"
   ML_GROUP = "77434585283036318"
+  REFERER = "https://www.mattb.nz/"
+  HOST = "subscribe.mattb.nz"
 
 [experimental]
   auto_rollback = true

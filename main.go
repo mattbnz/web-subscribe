@@ -13,13 +13,44 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const ML_URL = "https://connect.mailerlite.com/api/subscribers"
 
-var ml_group = -1
-var ml_apikey = ""
-var healthy = false
+type Config struct {
+	Port string
+
+	ML_group  int
+	ML_apikey string
+	Referer   string
+	Host      string
+
+	Valid bool
+}
+
+func (c *Config) Load() {
+	c.Port = os.Getenv("PORT")
+	if c.Port == "" {
+		c.Port = "8080"
+	}
+
+	c.ML_apikey = os.Getenv("ML_APIKEY")
+	v, err := strconv.Atoi(os.Getenv("ML_GROUP"))
+	if err != nil {
+		fmt.Printf("ML_GROUP is invalid: %v\n", err)
+	} else {
+		c.ML_group = v
+	}
+	c.Referer = os.Getenv("REFERER")
+	c.Host = os.Getenv("HOST")
+
+	if c.ML_apikey != "" && c.ML_group != 0 && c.Referer != "" && c.Host != "" {
+		c.Valid = true
+	}
+}
+
+var GlobalConfig Config
 
 type SubRequest struct {
 	Email      string `json:"email"`
@@ -47,29 +78,45 @@ func RenderJSON(d map[string]any, code int, w http.ResponseWriter) {
 
 func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.Header().Add("Location", "https://wwww.mattb.nz/")
+		w.Header().Add("Location", GlobalConfig.Referer)
 		w.WriteHeader(http.StatusFound)
 		return
 	}
-	if !healthy {
+	if !GlobalConfig.Valid {
 		RenderJSONError(errors.New("service unavailable"), http.StatusServiceUnavailable, w)
 		return
 	}
-
 	/*
-		TODO: Work out why this isn't working on fly.io
-		host, _, _ := net.SplitHostPort(r.Host)
-		if host == "" {
-			host = r.URL.Host
-			fmt.Printf("Host header not set, using %s from URL\n", host)
-		}
-		if host != "subscribe.mattb.nz" {
-			RenderJSONError(fmt.Errorf("bad host - %s", host), http.StatusBadRequest, w)
-			return
-		}
+	   TODO: Work out why this isn't working on fly.io
+	   host := r.Header.Get("Host")
+	   auth := r.Header.Get(":authority")
+	   fmt.Println("Host", host, " auth ", auth)
+
+	   Something to do with HTTP2 I think, maybe fly is not translating the pseudo-header to Host when
+	   forwarding the connection on?
+
+	   host, _, _ := net.SplitHostPort(r.Host)
+	   if host == "" {
+	           host = r.URL.Host
+	           fmt.Printf("Host header not set, using %s from URL\n", host)
+	   }
+	   if host != "subscribe.mattb.nz" {
+	           RenderJSONError(fmt.Errorf("bad host - %s", host), http.StatusBadRequest, w)
+	           return
+	   }
 	*/
+
 	if r.Header.Get("X-Forwarded-SSL") != "on" {
 		RenderJSONError(errors.New("ssl required"), http.StatusBadRequest, w)
+		return
+	}
+
+	referer := r.Header.Get("Referer")
+	fmt.Println("Referer", referer)
+
+	if !strings.HasPrefix(referer, GlobalConfig.Referer) {
+		log.Printf("ERROR: %s is not from %s\n", referer, GlobalConfig.Referer)
+		RenderJSONError(errors.New("invalid referer"), http.StatusBadRequest, w)
 		return
 	}
 
@@ -83,7 +130,7 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		RenderJSONError(errors.New("email is required"), http.StatusBadRequest, w)
 		return
 	}
-	sr.Groups = []int{ml_group}
+	sr.Groups = []int{GlobalConfig.ML_group}
 	sr.Status = "unconfirmed"
 	sr.IP_address = r.Header.Get("Fly-Client-IP")
 
@@ -98,7 +145,7 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", ml_apikey))
+	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", GlobalConfig.ML_apikey))
 
 	client := &http.Client{}
 	response, error := client.Do(request)
@@ -119,37 +166,33 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	GlobalConfig.Load()
+	if !GlobalConfig.Valid {
+		log.Println("WARNING: invalid config - see /healthz for details!")
 	}
-	ml_apikey = os.Getenv("ML_APIKEY")
-	v, err := strconv.Atoi(os.Getenv("ML_GROUP"))
-	if err != nil {
-		fmt.Printf("ML_GROUP is invalid: %v\n", err)
-	} else {
-		ml_group = v
-	}
-	if ml_apikey != "" && ml_group != -1 {
-		healthy = true
-	} else {
-		fmt.Println("WARNING: server is unhealthy due to missing config - see /healthz for details!")
-	}
+
+	// Handle requests
 	http.HandleFunc("/", HandleSubscribe)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if healthy {
+		if GlobalConfig.Valid {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("all good"))
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
-			if ml_apikey == "" {
+			if GlobalConfig.ML_apikey == "" {
 				w.Write([]byte("missing apikey\n"))
 			}
-			if ml_group == -1 {
+			if GlobalConfig.ML_group == -1 {
 				w.Write([]byte("missing group\n"))
+			}
+			if GlobalConfig.Referer == "" {
+				w.Write([]byte("missing referer\n"))
+			}
+			if GlobalConfig.Host == "" {
+				w.Write([]byte("missing host\n"))
 			}
 		}
 	})
-	log.Println("listening on", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Println("listening on", GlobalConfig.Port)
+	log.Fatal(http.ListenAndServe(":"+GlobalConfig.Port, nil))
 }
