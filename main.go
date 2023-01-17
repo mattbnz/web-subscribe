@@ -115,7 +115,10 @@ func main() {
 		port = "8080"
 	}
 	http.HandleFunc("/", HandleSubscribe)
-
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("all good"))
+	})
 	log.Println("listening on", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
