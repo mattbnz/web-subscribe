@@ -21,10 +21,10 @@ const ML_URL = "https://connect.mailerlite.com/api/subscribers"
 type Config struct {
 	Port string
 
-	ML_group  int
-	ML_apikey string
-	Referer   string
-	Host      string
+	ML_group        int
+	ML_apikey       string
+	AllowedReferers []string
+	Host            string
 
 	Valid bool
 }
@@ -42,10 +42,10 @@ func (c *Config) Load() {
 	} else {
 		c.ML_group = v
 	}
-	c.Referer = os.Getenv("REFERER")
+	c.AllowedReferers = strings.Split(os.Getenv("ALLOWED_REFERERS"), ",")
 	c.Host = os.Getenv("HOST")
 
-	if c.ML_apikey != "" && c.ML_group != 0 && c.Referer != "" && c.Host != "" {
+	if c.ML_apikey != "" && c.ML_group != 0 && len(c.AllowedReferers) > 0 && c.AllowedReferers[0] != "" && c.Host != "" {
 		c.Valid = true
 	}
 }
@@ -78,7 +78,7 @@ func RenderJSON(d map[string]any, code int, w http.ResponseWriter) {
 
 func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.Header().Add("Location", GlobalConfig.Referer)
+		w.Header().Add("Location", GlobalConfig.AllowedReferers[0])
 		w.WriteHeader(http.StatusFound)
 		return
 	}
@@ -114,8 +114,15 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	referer := r.Header.Get("Referer")
 	fmt.Println("Referer", referer)
 
-	if !strings.HasPrefix(referer, GlobalConfig.Referer) {
-		log.Printf("ERROR: %s is not from %s\n", referer, GlobalConfig.Referer)
+	found := false
+	for _, allowed := range GlobalConfig.AllowedReferers {
+		if strings.HasPrefix(referer, allowed) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		log.Printf("ERROR: %s is not from one of %s\n", referer, strings.Join(GlobalConfig.AllowedReferers, ","))
 		RenderJSONError(errors.New("invalid referer"), http.StatusBadRequest, w)
 		return
 	}
@@ -185,7 +192,7 @@ func main() {
 			if GlobalConfig.ML_group == -1 {
 				w.Write([]byte("missing group\n"))
 			}
-			if GlobalConfig.Referer == "" {
+			if len(GlobalConfig.AllowedReferers) == 0 || GlobalConfig.AllowedReferers[0] == "" {
 				w.Write([]byte("missing referer\n"))
 			}
 			if GlobalConfig.Host == "" {
