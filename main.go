@@ -12,17 +12,16 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 )
 
-const ML_URL = "https://connect.mailerlite.com/api/subscribers"
+const BD_URL = "https://api.buttondown.com/v1/subscribers"
 
 type Config struct {
 	Port string
 
-	ML_group        int
-	ML_apikey       string
+	BD_group        string
+	BD_apikey       string
 	AllowedReferers []string
 	Host            string
 
@@ -35,17 +34,15 @@ func (c *Config) Load() {
 		c.Port = "8080"
 	}
 
-	c.ML_apikey = os.Getenv("ML_APIKEY")
-	v, err := strconv.Atoi(os.Getenv("ML_GROUP"))
-	if err != nil {
-		fmt.Printf("ML_GROUP is invalid: %v\n", err)
-	} else {
-		c.ML_group = v
+	c.BD_apikey = os.Getenv("BD_APIKEY")
+	c.BD_group = os.Getenv("BD_GROUP")
+	if c.BD_group == "" {
+		c.BD_group = "all_emails"
 	}
 	c.AllowedReferers = strings.Split(os.Getenv("ALLOWED_REFERERS"), ",")
 	c.Host = os.Getenv("HOST")
 
-	if c.ML_apikey != "" && c.ML_group != 0 && len(c.AllowedReferers) > 0 && c.AllowedReferers[0] != "" && c.Host != "" {
+	if c.BD_apikey != "" && c.BD_group != "" && len(c.AllowedReferers) > 0 && c.AllowedReferers[0] != "" && c.Host != "" {
 		c.Valid = true
 	}
 }
@@ -53,10 +50,10 @@ func (c *Config) Load() {
 var GlobalConfig Config
 
 type SubRequest struct {
-	Email      string `json:"email"`
-	Groups     []int  `json:"groups"`
-	Status     string `json:"status"`
-	IP_address string `json:"ip_address"`
+	Email    string            `json:"email_address,omitempty"`
+	OldEmail string            `json:"email,omitempty"`
+	Notes    string            `json:"notes,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // Helper to render an error as a JSON response
@@ -133,26 +130,29 @@ func HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		RenderJSONError(errors.New("could not parse subscription request"), http.StatusBadRequest, w)
 		return
 	}
+	if sr.OldEmail != "" && sr.Email == "" {
+		sr.Email = sr.OldEmail
+		sr.OldEmail = ""
+	}
 	if sr.Email == "" {
 		RenderJSONError(errors.New("email is required"), http.StatusBadRequest, w)
 		return
 	}
-	sr.Groups = []int{GlobalConfig.ML_group}
-	sr.Status = "unconfirmed"
-	sr.IP_address = r.Header.Get("Fly-Client-IP")
+	sr.Metadata = map[string]string{GlobalConfig.BD_group: "1"}
+	sr.Notes = fmt.Sprintf("Subscribed via %s", r.Header.Get("Fly-Client-IP"))
 
 	jb, err := json.Marshal(sr)
 	if err != nil {
 		RenderJSONError(errors.New("could not marshall subscription request"), http.StatusInternalServerError, w)
 	}
 	fmt.Println(string(jb))
-	request, error := http.NewRequest("POST", ML_URL, bytes.NewBuffer(jb))
+	request, error := http.NewRequest("POST", BD_URL, bytes.NewBuffer(jb))
 	if error != nil {
 		RenderJSONError(errors.New("could not post subscription request"), http.StatusInternalServerError, w)
 	}
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", GlobalConfig.ML_apikey))
+	request.Header.Set("Authorization", fmt.Sprintf("Token %s", GlobalConfig.BD_apikey))
 
 	client := &http.Client{}
 	response, error := client.Do(request)
@@ -186,10 +186,10 @@ func main() {
 			w.Write([]byte("all good"))
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
-			if GlobalConfig.ML_apikey == "" {
+			if GlobalConfig.BD_apikey == "" {
 				w.Write([]byte("missing apikey\n"))
 			}
-			if GlobalConfig.ML_group == -1 {
+			if GlobalConfig.BD_group == "" {
 				w.Write([]byte("missing group\n"))
 			}
 			if len(GlobalConfig.AllowedReferers) == 0 || GlobalConfig.AllowedReferers[0] == "" {

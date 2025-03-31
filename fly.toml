@@ -11,7 +11,7 @@ processes = []
 
 [env]
   PORT = "8080"
-  ML_GROUP = "77434585283036318"
+  BD_GROUP = "all_emails"
   ALLOWED_REFERERS = "https://www.mattb.nz/,https://mattb.nz/,https://www.mattb.net.nz/,https://mattb.net.nz/"
   HOST = "subscribe.mattb.nz"
 
